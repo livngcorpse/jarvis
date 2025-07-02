@@ -1,0 +1,12 @@
+{
+  "devs": [123456789],
+  "access_mode": "dev",
+  "memory": {
+    "default_model": "gemini-1.5-flash",
+    "personality": "assistant"
+  },
+  "enabled_plugins": [],
+  "plugins": {},
+  "logs": [],
+  "last_action": ""
+}
