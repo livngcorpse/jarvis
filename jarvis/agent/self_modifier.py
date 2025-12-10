@@ -347,24 +347,32 @@ class SelfModifier:
             
             # Run tests (if available)
             try:
-                # Copy staged files to a temporary test directory to run tests
+                # Create a temporary test environment that mimics the project structure
                 import shutil
-                test_dir = self.staging_dir / "test_temp"
-                test_dir.mkdir(exist_ok=True)
+                test_env_dir = self.staging_dir / "test_env"
+                test_env_dir.mkdir(exist_ok=True)
                 
-                # Copy relevant files to test directory
+                # Copy the entire project to the test environment
+                for item in PROJECT_ROOT.iterdir():
+                    if item.name != ".staging":  # Don't copy the staging directory
+                        if item.is_dir():
+                            shutil.copytree(item, test_env_dir / item.name, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(item, test_env_dir / item.name)
+                
+                # Replace staged files in the test environment
                 for file_path, staging_path in staged_files.items():
-                    test_path = test_dir / file_path
-                    test_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(staging_path, test_path)
+                    test_file_path = test_env_dir / file_path
+                    test_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(staging_path, test_file_path)
                 
-                # Run tests
+                # Run tests from the test environment
                 result = subprocess.run([
-                    sys.executable, "-m", "pytest", "-q", str(PROJECT_ROOT / "tests")
-                ], cwd=test_dir, capture_output=True, text=True)
+                    sys.executable, "-m", "pytest", "-q", "tests/"
+                ], cwd=test_env_dir, capture_output=True, text=True)
                 
                 # Clean up
-                shutil.rmtree(test_dir)
+                shutil.rmtree(test_env_dir)
                 
                 if result.returncode != 0:
                     self.logger.error(f"Tests failed: {result.stdout}\n{result.stderr}")
@@ -374,10 +382,10 @@ class SelfModifier:
             except Exception as e:
                 self.logger.error(f"Error running tests: {e}")
                 # Clean up on error
-                test_dir = self.staging_dir / "test_temp"
-                if test_dir.exists():
+                test_env_dir = self.staging_dir / "test_env"
+                if test_env_dir.exists():
                     import shutil
-                    shutil.rmtree(test_dir)
+                    shutil.rmtree(test_env_dir)
                 return False
             
             self.logger.info("Validation passed")
