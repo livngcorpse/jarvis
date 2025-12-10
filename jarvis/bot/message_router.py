@@ -57,6 +57,7 @@ async def handle_dev_instruction(
         message_text: The original message text
         classification: Classification result
     """
+    from utils.logger import app_logger
     app_logger.info(f"Handling dev instruction: {classification.get('summary', message_text)}")
     
     # Notify admin that we're processing the request
@@ -67,6 +68,7 @@ async def handle_dev_instruction(
     )
     
     # Create a DevRequest
+    from agent.self_modifier import DevRequest
     dev_request = DevRequest(
         intent="modify",
         target_files=classification.get("targets", []),
@@ -74,6 +76,7 @@ async def handle_dev_instruction(
     )
     
     # Process the request
+    from agent.self_modifier import self_modifier
     result = self_modifier.process_dev_request(dev_request)
     
     # Send result back to admin
@@ -82,6 +85,9 @@ async def handle_dev_instruction(
         if result.get("restart_required"):
             message += " The bot will now restart."
     else:
-        message = f"Action failed. {result['message']} See logs jarvis/logs/self_modify.log for details."
+        message = (
+            f"Action failed. {result['message']} "
+            f"See logs at jarvis/logs/self_modify.log for details."
+        )
         
     await update.message.reply_text(message)

@@ -6,7 +6,7 @@ Handles soft reloads and full restarts.
 import sys
 import os
 import importlib
-from typing import List
+from typing import List, Dict, Any
 from config import RELOAD_CRITICAL_FILES
 from utils.logger import app_logger
 
@@ -39,9 +39,12 @@ def soft_reload(changed_modules: List[str]) -> bool:
         app_logger.error(f"Soft reload failed: {e}")
         return False
 
-def full_restart() -> None:
+def full_restart(exit_code: int = EXIT_CODE_NORMAL_RESTART) -> None:
     """
     Perform a full restart of the application.
+    
+    Args:
+        exit_code: Exit code to use when restarting
     """
     app_logger.info("Performing full restart...")
     try:
@@ -50,18 +53,21 @@ def full_restart() -> None:
     except Exception as e:
         app_logger.error(f"Full restart failed: {e}")
         # If execv fails, exit with restart code
-        sys.exit(EXIT_CODE_NORMAL_RESTART)
+        sys.exit(exit_code)
 
-def determine_reload_type(changed_files: List[str]) -> str:
+def determine_reload_type(changes: Dict[str, Any]) -> str:
     """
-    Determine whether to perform a soft reload or full restart.
+    Determine whether to perform a soft reload or full restart based on changes.
     
     Args:
-        changed_files: List of changed file paths
+        changes: Dictionary with file changes information
         
     Returns:
         "soft" for soft reload, "full" for full restart
     """
+    changed_files = changes.get("changed_files", [])
+    dependencies_changed = changes.get("dependencies_changed", False)
+    
     # Check if any critical files were changed
     for file_path in changed_files:
         file_name = os.path.basename(file_path)
@@ -70,7 +76,7 @@ def determine_reload_type(changed_files: List[str]) -> str:
             return "full"
             
     # Check if requirements.txt was changed (new dependencies)
-    if "requirements.txt" in [os.path.basename(f) for f in changed_files]:
+    if dependencies_changed or "requirements.txt" in [os.path.basename(f) for f in changed_files]:
         app_logger.info("Requirements file changed, triggering full restart")
         return "full"
         
@@ -93,3 +99,17 @@ def health_check() -> bool:
     except Exception as e:
         app_logger.error(f"Health check failed: {e}")
         return False
+
+def verify_reload_success() -> bool:
+    """
+    Verify that the reload was successful by performing a health check.
+    
+    Returns:
+        True if verification passes, False otherwise
+    """
+    # Wait a moment for reload to complete
+    import time
+    time.sleep(1)
+    
+    # Perform health check
+    return health_check()

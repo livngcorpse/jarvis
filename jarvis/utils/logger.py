@@ -4,7 +4,9 @@ Logger utility for the Jarvis Telegram bot.
 
 import logging
 import os
+from pathlib import Path
 from config import LOG_LEVEL
+
 
 def setup_logger(name: str, log_file: str = None, level: str = None) -> logging.Logger:
     """
@@ -39,6 +41,10 @@ def setup_logger(name: str, log_file: str = None, level: str = None) -> logging.
     
     # File handler (if log_file is specified)
     if log_file:
+        # Create directory if it doesn't exist
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
@@ -46,4 +52,4 @@ def setup_logger(name: str, log_file: str = None, level: str = None) -> logging.
     return logger
 
 # Default logger for the application
-app_logger = setup_logger("jarvis")
+app_logger = setup_logger("jarvis", "/home/zero/Projects/jarvis/jarvis/logs/jarvis.log")

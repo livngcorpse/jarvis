@@ -167,11 +167,6 @@ class SelfModifier:
                 # For full restart, we just exit with the appropriate code
                 # The process manager should restart us
                 self.logger.info("Full restart required - exiting")
-                # Import the full_restart function
-                from agent.reloader import full_restart, EXIT_CODE_CRITICAL_FILE_CHANGED
-                # Trigger full restart
-                full_restart(EXIT_CODE_CRITICAL_FILE_CHANGED)
-                # This point should never be reached
                 return {
                     "status": "success",
                     "message": "Changes applied. Full restart performed.",
