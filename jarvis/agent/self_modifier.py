@@ -87,6 +87,22 @@ class SelfModifier:
         """
         context_parts = []
         
+        # Add general project structure information
+        context_parts.append("PROJECT STRUCTURE:")
+        try:
+            from pathlib import Path
+            project_items = []
+            for item in PROJECT_ROOT.iterdir():
+                if item.is_dir():
+                    project_items.append(f"{item.name}/")
+                else:
+                    project_items.append(item.name)
+            context_parts.append(", ".join(project_items))
+        except Exception as e:
+            context_parts.append(f"Error reading project structure: {e}")
+        
+        # Add information about target files
+        context_parts.append("\nTARGET FILES CONTENT:")
         for file_path in target_files:
             full_path = PROJECT_ROOT / file_path
             if full_path.exists() and full_path.is_file():
@@ -103,6 +119,28 @@ class SelfModifier:
             else:
                 context_parts.append(f"{file_path}: [File does not exist]")
                 
+        # Add information about related files (files in the same directories)
+        context_parts.append("\nRELATED FILES CONTENT:")
+        related_dirs = set()
+        for file_path in target_files:
+            parent_dir = str(Path(file_path).parent)
+            if parent_dir != ".":
+                related_dirs.add(parent_dir)
+                
+        for dir_path in related_dirs:
+            dir_full_path = PROJECT_ROOT / dir_path
+            if dir_full_path.exists() and dir_full_path.is_dir():
+                try:
+                    for item in dir_full_path.iterdir():
+                        if item.is_file() and item.name not in [Path(f).name for f in target_files]:
+                            # Read small files only
+                            if item.stat().st_size < 5000:  # Less than 5KB
+                                with open(item, 'r') as f:
+                                    content = f.read()
+                                    context_parts.append(f"{item.relative_to(PROJECT_ROOT)}:\n{content}")
+                except Exception as e:
+                    context_parts.append(f"Error reading directory {dir_path}: {e}")
+        
         return "\n\n".join(context_parts)
     
     def _apply_changes(self, changes: Dict[str, Any], dev_request: DevRequest) -> Dict[str, Any]:
@@ -139,9 +177,6 @@ class SelfModifier:
             backup_path = self.backup_dir / timestamp
             backup(target_paths, backup_path)
             
-            # Step 0.1: Clean up old backups
-            self._cleanup_old_backups()
-            
             # Step 1: Write to staging area
             self.logger.info("Writing changes to staging area")
             staged_files = self._write_to_staging(file_changes)
@@ -167,10 +202,14 @@ class SelfModifier:
                 # For full restart, we just exit with the appropriate code
                 # The process manager should restart us
                 self.logger.info("Full restart required - exiting")
-                # Import the full_restart function
-                from agent.reloader import full_restart, EXIT_CODE_CRITICAL_FILE_CHANGED
+                # Import the full_restart function and exit codes
+                from agent.reloader import full_restart, EXIT_CODE_CRITICAL_FILE_CHANGED, EXIT_CODE_DEPENDENCY_CHANGED
+                # Determine the appropriate exit code
+                exit_code = EXIT_CODE_CRITICAL_FILE_CHANGED
+                if self._check_dependencies_changed(file_changes):
+                    exit_code = EXIT_CODE_DEPENDENCY_CHANGED
                 # Trigger full restart
-                full_restart(EXIT_CODE_CRITICAL_FILE_CHANGED)
+                full_restart(exit_code)
                 # This point should never be reached
                 return {
                     "status": "success",
@@ -256,33 +295,62 @@ class SelfModifier:
         file_changes = {}
         
         # Handle different response formats
-        if "files" in changes:
+        if "files" in changes and isinstance(changes["files"], list):
             # JSON format with files array
             for file_info in changes["files"]:
-                if "path" in file_info and "content" in file_info:
+                if isinstance(file_info, dict) and "path" in file_info and "content" in file_info:
                     file_changes[file_info["path"]] = file_info["content"]
+                elif isinstance(file_info, dict) and "path" in file_info and "diff" in file_info:
+                    # Handle diff format - for now, just log that we received a diff
+                    self.logger.info(f"Received diff for {file_info['path']}, but diff processing not implemented")
+                    # In a full implementation, we would apply the diff here
         elif isinstance(changes, dict) and "text" in changes:
             # Text format - try to parse as file content
-            # This is a simplified parser - in practice, you'd want a more robust one
             text = changes["text"]
             lines = text.split("\n")
             current_file = None
             current_content = []
             
             for line in lines:
-                if line.startswith("--- ") and line.endswith(" ---"):
-                    # New file header
+                if line.startswith("--- ") and " ---" in line and line.endswith(" ---"):
+                    # New file header - save previous file if we had one
                     if current_file and current_content:
                         file_changes[current_file] = "\n".join(current_content)
+                        current_content = []
                         
+                    # Extract file path from --- path/to/file.py ---
                     current_file = line[4:-4]  # Remove --- markers
-                    current_content = []
                 elif current_file:
                     current_content.append(line)
                     
             # Don't forget the last file
             if current_file and current_content:
                 file_changes[current_file] = "\n".join(current_content)
+        else:
+            # Try to parse as a simple text response with file markers
+            # This is a more robust parser that handles various edge cases
+            if isinstance(changes, str):
+                text = changes
+            elif isinstance(changes, dict):
+                text = str(changes)
+            else:
+                text = ""
+                
+            # Look for file markers in the text
+            import re
+            file_pattern = r"---\s+(.*?)\s+---"
+            matches = list(re.finditer(file_pattern, text))
+            
+            if matches:
+                for i, match in enumerate(matches):
+                    file_path = match.group(1)
+                    # Get content between this match and the next one (or end of text)
+                    start_pos = match.end()
+                    end_pos = matches[i+1].start() if i+1 < len(matches) else len(text)
+                    content = text[start_pos:end_pos].strip()
+                    file_changes[file_path] = content
+            else:
+                self.logger.warning("Could not parse file changes from AI response")
                 
         return file_changes
     
@@ -445,14 +513,27 @@ class SelfModifier:
         # Check if any Python files added new imports
         for file_path, content in file_changes.items():
             if file_path.endswith(".py"):
-                # Simple check for import statements that might indicate new dependencies
+                # Parse the content to check for new external imports
                 lines = content.split("\n")
                 for line in lines:
                     line = line.strip()
-                    if line.startswith("import ") or line.startswith("from ") and " import " in line:
-                        # This is a very basic check - in a real implementation,
-                        # you might want to parse the AST to check for new external imports
-                        pass
+                    # Check for import statements that might indicate new dependencies
+                    if (line.startswith("import ") or 
+                        (line.startswith("from ") and " import " in line)):
+                        # Check if this is importing from a third-party library
+                        # This is a simple heuristic - in a real implementation,
+                        # you might want to check against a list of standard library modules
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            module_name = parts[1]
+                            # Skip standard library modules
+                            stdlib_modules = {
+                                'os', 'sys', 'json', 'time', 'logging', 'pathlib',
+                                'typing', 'subprocess', 'shutil', 'tempfile', 're'
+                            }
+                            if module_name not in stdlib_modules and not module_name.startswith('.'):
+                                self.logger.info(f"Potential new dependency detected: {module_name}")
+                                return True
                         
         return False
 

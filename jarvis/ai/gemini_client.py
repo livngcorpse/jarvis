@@ -9,6 +9,7 @@ import json
 import time
 import logging
 from config import GEMINI_API_KEY
+from ai.prompts import SYSTEM_CONSTRAINTS, DEV_REQUEST_PROMPT, INTENT_CLASSIFICATION_PROMPT
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -26,6 +27,28 @@ class GeminiClient:
         if GEMINI_API_KEY:
             self.model = genai.GenerativeModel('gemini-pro')
     
+    def _retry_with_backoff(self, func, max_retries=3, base_delay=1):
+        """
+        Retry a function with exponential backoff.
+        
+        Args:
+            func: Function to retry
+            max_retries: Maximum number of retries
+            base_delay: Base delay in seconds
+            
+        Returns:
+            Result of the function call
+        """
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay} seconds...")
+                time.sleep(delay)
+    
     def generate_code_update(self, context: str, instruction: str) -> Dict[str, Any]:
         """
         Generate code updates based on context and instruction.
@@ -41,36 +64,21 @@ class GeminiClient:
             raise ValueError("Gemini API key not configured")
             
         prompt = f"""
-        SYSTEM: You are a trusted developer assistant. You must follow these non-negotiable rules:
-        - Only modify files within the project sandbox: the absolute path under PROJECT_ROOT/jarvis/.
-        - NEVER write or modify files outside jarvis/.
-        - Always return code that follows PEP8 and includes a top-level docstring explaining the change.
-        - When asked to edit code, prefer producing a minimal patch or a full new file content. If giving a patch, use unified-diff format and include filenames.
-        - Before finalizing changes, include unit tests when appropriate.
-        - All files must pass static checks (ruff/black/pytest). If unable to produce tests, return a justification and a minimal smoke test.
-        - Do not include secrets in code. Use environment variables only.
-        - Keep external dependencies minimal. If new dependencies are required, add them to requirements.txt and flag for a full-restart.
+        {SYSTEM_CONSTRAINTS}
         
-        USER_INSTRUCTION: {instruction}
-        PROJECT_CONTEXT: {context}
-        GOAL: Your task is to implement this user instruction by modifying or creating files under jarvis/.
-        OUTPUT_FORMAT: Provide either:
-        - A unified diff between old and new file(s), OR
-        - The full new contents of each changed file with exact path headers formatted as:
-        --- path/to/file.py ---
-        <file content here>
-        If dependencies are added, include exact pip package names and version constraints to append to requirements.txt.
-        Also include any new tests to add and the exact test file path.
-        Explain briefly the reason for each change (2-3 lines).
+        {DEV_REQUEST_PROMPT.format(admin_text=instruction, project_context=context)}
         """
         
-        try:
+        def _call_api():
             response = self.model.generate_content(prompt)
             # Try to parse as JSON if possible
             try:
                 return json.loads(response.text)
             except json.JSONDecodeError:
                 return {"text": response.text}
+                
+        try:
+            return self._retry_with_backoff(_call_api)
         except Exception as e:
             logger.error(f"Error generating code update: {e}")
             raise
@@ -89,18 +97,19 @@ class GeminiClient:
             raise ValueError("Gemini API key not configured")
             
         prompt = f"""
-        Given the admin's message, classify whether it is:
-        - NORMAL_CHAT: casual conversation / non-dev request
-        - DEV_INSTRUCTION: a request to change code, add features, modify configuration, add files, or change deployment
-        If DEV_INSTRUCTION, also identify suggested target files (list of existing files or new file paths) and a short 1-sentence summary of what to change.
-        Output JSON: {{"type": "DEV_INSTRUCTION"|"NORMAL_CHAT", "targets": [...], "summary": "..."}}
+        {SYSTEM_CONSTRAINTS}
+        
+        {INTENT_CLASSIFICATION_PROMPT}
         
         Message: {text}
         """
         
-        try:
+        def _call_api():
             response = self.model.generate_content(prompt)
             return json.loads(response.text)
+            
+        try:
+            return self._retry_with_backoff(_call_api)
         except Exception as e:
             logger.error(f"Error classifying intent: {e}")
             # Default to normal chat if classification fails

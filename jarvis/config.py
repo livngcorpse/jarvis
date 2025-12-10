@@ -22,7 +22,7 @@ ALLOWED_ROOT_PATH = Path(ALLOWED_ROOT).resolve()
 # Define critical files that trigger full restart
 RELOAD_CRITICAL_FILES = {
     "main.py",
-    "config.py",
+    "jarvis/config.py",
     "requirements.txt"
 }
 

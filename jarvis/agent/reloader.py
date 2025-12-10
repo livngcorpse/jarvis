@@ -70,9 +70,9 @@ def determine_reload_type(changes: Dict[str, Any]) -> str:
     
     # Check if any critical files were changed
     for file_path in changed_files:
-        file_name = os.path.basename(file_path)
-        if file_name in RELOAD_CRITICAL_FILES:
-            app_logger.info(f"Critical file {file_name} changed, triggering full restart")
+        # Check both the full path and basename for critical files
+        if file_path in RELOAD_CRITICAL_FILES or os.path.basename(file_path) in RELOAD_CRITICAL_FILES:
+            app_logger.info(f"Critical file {file_path} changed, triggering full restart")
             return "full"
             
     # Check if requirements.txt was changed (new dependencies)
@@ -94,6 +94,11 @@ def health_check() -> bool:
     try:
         import bot.handlers.normal_chat
         import bot.dispatcher
+        # Try to call a simple function to verify functionality
+        from bot.handlers.normal_chat import reply_to_text
+        test_response = reply_to_text("health check")
+        if not isinstance(test_response, str) or len(test_response) == 0:
+            raise Exception("Health check function returned invalid response")
         app_logger.info("Health check passed")
         return True
     except Exception as e:
