@@ -1,0 +1,7 @@
+python-telegram-bot>=20.0
+google-generativeai>=0.3.0
+requests
+pytest
+black
+ruff
+watchdog

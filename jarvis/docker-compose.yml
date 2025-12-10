@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  jarvis:
+    build: .
+    container_name: jarvis-bot
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    restart: unless-stopped

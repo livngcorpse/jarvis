@@ -1,0 +1,331 @@
+MASTER PROMPT FOR GEMINI — Generate jarvis/ Telegram JARVIS-style self-modifying bot (Python + Gemini API)
+
+Instruction to the model (short):
+Create a fully working, tested, deployable Python Telegram bot project root named jarvis/. The bot must behave like a normal chatbot for users, and for admin user IDs it must accept natural-language modification instructions (no slash commands) that cause it to create/edit files and features inside the project sandbox. Use Gemini API for natural-language understanding and code generation. Implement Reload Mode C: prefer soft reloads for small changes but perform a full restart when necessary. Add safety, backups, atomic writes, validation (lint + tests), and an automatic rollback on failure. Produce all files, requirements.txt, Dockerfile, .env.example, deployment instructions (systemd + docker-compose), and basic unit tests. Any examples used are purely illustrative.
+
+Project goals and constraints (copy this exactly into the prompt)
+
+Project root folder: jarvis/ (everything must live inside this folder).
+
+Language & libs: Python 3.11+ recommended. Use python-telegram-bot (v20+), requests (or an official Gemini client if available), importlib, watchdog (optional), pytest, black/ruff (or flake8), and uvicorn only if needed. Keep dependencies minimal.
+
+AI usage: Use Gemini API as the assistant brain for:
+
+interpreting admin natural-language dev instructions,
+
+generating or editing code files,
+
+producing safe diffs or full-file replacements.
+
+Sandbox rule: The bot may only modify files inside the project sandbox folder jarvis/ and its subfolders. Never write outside that folder. Enforce this with ALLOWED_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, "jarvis")) checks.
+
+Admin control: Use ADMIN_IDS environment variable or config to list numeric Telegram user IDs with dev permission. Only those IDs trigger self-modification flows. Non-admins get normal chatbot responses.
+
+No explicit slash-commands: Admins will speak in plain language. The bot must detect whether the message is an admin instruction vs normal chat.
+
+Reload Mode C behavior (automated):
+
+If changed files are limited to handler modules or utilities (not main.py, not config.py, not requirements.txt), perform soft reload via importlib.reload(module).
+
+If changes include main.py, config.py, requirements.txt, or the set of changed files touches process-level behavior (new dependencies, changed env usage), perform a full restart via os.execv(sys.executable, [...]) or, if running under a process manager, exit with a specific code (documented).
+
+The decision logic should be deterministic and explicit: define CRITICAL_FILES = {"main.py", "jarvis/config.py", "requirements.txt"} etc.
+
+Safety & validation pipeline (mandatory) for any code change:
+
+Step 0: Create a safe snapshot/backup of files to be changed (copy to jarvis/backups/<timestamp>/).
+
+Step 1: Generate proposed file changes (prefer diffs). Save them in a staging area jarvis/.staging/.
+
+Step 2: Run static checks (ruff/flake8), formatting (black --check), and run unit tests pytest -q limited to relevant tests.
+
+Step 3: If all checks pass, atomically replace the files (write to temp file then os.replace into project folder).
+
+Step 4: Apply reload rule (soft reload or full restart) and confirm live health check (ping /health endpoint or send a test message to the bot’s own handler).
+
+Step 5: If any step fails, restore from backup and inform the admin with an error message and the failure log.
+
+Rollback: Keep N=5 previous backups. Keep a human-readable log at jarvis/logs/self_modify.log.
+
+Testing & CI: Include at least one simple pytest test that checks the bot can import and respond to a simple text handler. Add a Makefile target: make test to run tests.
+
+Deployable: Provide Dockerfile, docker-compose.yml (optional), and one sample systemd service file in jarvis/deploy/. Include .env.example.
+
+Examples disclaimer: At top-level README include:
+
+"Examples in this repo are for illustration only; any example command text or feature described is illustrative and can be modified."
+
+Do not request additional data from the user — generate a complete bootstrap project with placeholder values and .env.example entries for TELEGRAM_TOKEN, GEMINI_API_KEY, ADMIN_IDS. Use clearly documented placeholders and comments in files.
+
+Folder structure (exact tree to create)
+jarvis/
+├── README.md
+├── LICENSE
+├── .gitignore
+├── .env.example
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+├── run.sh
+├── app.py                 # entrypoint that boots the bot (imports jarvis.main)
+├── main.py                # main launcher that connects to telegram
+├── config.py              # loads env and constants
+├── logs/
+│   └── README.md
+├── backups/
+│   └── README.md
+├── bot/
+│   ├── __init__.py
+│   ├── dispatcher.py      # setup for handlers and Telegram dispatcher
+│   ├── handlers/
+│   │   ├── __init__.py
+│   │   ├── normal_chat.py # normal user chat handlers
+│   │   └── health.py      # health check handler
+│   ├── admin_interpreter.py  # decides if admin message is instruction & packages request
+│   └── message_router.py
+├── ai/
+│   ├── __init__.py
+│   ├── gemini_client.py   # thin Gemini API wrapper, token from env
+│   └── prompts.py         # canonical prompts and system instructions used for generation
+├── agent/
+│   ├── __init__.py
+│   ├── self_modifier.py   # takes admin intent -> code diffs/files -> validation -> apply
+│   ├── reloader.py        # soft reload / full restart logic
+│   └── sandbox.py         # enforces ALLOWED_ROOT file checks and safe write helpers
+├── utils/
+│   ├── __init__.py
+│   ├── fileops.py         # atomic write, backup, restore helpers
+│   ├── security.py        # admin checks, path sanitization
+│   └── logger.py
+├── tests/
+│   ├── __init__.py
+│   └── test_basic.py
+├── deploy/
+│   ├── jarvis.service     # example systemd unit (commented)
+│   └── README.md
+└── .staging/              # created at runtime, .gitignored (do not pre-populate with code)
+
+File responsibilities & key behaviors (short bullets)
+
+app.py — tiny wrapper that calls python -m main or directly imports main.run(); useful for Docker entrypoint.
+
+main.py — config load, set up Telegram Bot/Dispatcher, start polling or webhook, register normal and admin handlers, start background agent service. This is the process that may be restarted on full-restart.
+
+config.py — read .env via os.environ; defines ALLOWED_ROOT, ADMIN_IDS, RELOAD_CRITICAL_FILES, timeouts, logging config.
+
+bot/dispatcher.py — central dispatcher; receives Telegram updates and delegates to bot.handlers and bot.admin_interpreter.
+
+bot/handlers/normal_chat.py — simple conversational responses (use Gemini for nice replies but separate from admin-mod flows).
+
+bot/admin_interpreter.py — when a message is from ADMIN_IDS, decide if it's a dev instruction or normal conversational text. If instruction: create a DevRequest object with intent, target_files, goal_description, constraints. Use a short prompt to Gemini for intent classification and suggested target files.
+
+ai/gemini_client.py — small, well-documented client wrapper for Gemini calls. Provide generate_code_update(context, instruction) and classify_intent(text) helpers. Include retry and rate-limit handling.
+
+ai/prompts.py — canonical system prompt(s) for code generation (safety rules, allowed paths, style, docstring requirement, test-first behavior). This file must include the Master Prompt Template used when asking Gemini to modify files.
+
+agent/self_modifier.py — core: receives a DevRequest, gets suggested code from Gemini (prefer diffs), writes to staging, runs validation pipeline, applies change, backups, trigger reload, post status back to admin. Log everything.
+
+agent/reloader.py — functions: soft_reload(changed_modules), full_restart(); implement full_restart() using os.execv(sys.executable, [sys.executable] + sys.argv) with graceful shutdown. Also provide exit codes and a health-check method.
+
+agent/sandbox.py — check target paths, forbid symlinks that escape sandbox, forbid absolute paths outside allowed root, file size limits.
+
+utils/fileops.py — implement atomic_write(path, content), backup(paths, dest_dir), restore(backup_dir).
+
+utils/security.py — is_admin(user_id), sanitize_path, is_path_allowed(path).
+
+tests/test_basic.py — imports a simple handler and simulates a message event; asserts a non-empty reply function or return value.
+
+Example high-level flows (illustrative only)
+
+These example messages are for illustration in comments, not required interfaces.
+
+Admin natural-language edit (example):
+
+“Change the welcome message so it’s friendlier and adds emojis. Also shorten the default help text.”
+
+What happens:
+
+bot.dispatcher receives message; bot.admin_interpreter classifies as DevRequest.
+
+agent.self_modifier packages the request and current bot/handlers/normal_chat.py content and sends a generation prompt to Gemini.
+
+Gemini returns new normal_chat.py content.
+
+self_modifier writes to .staging/, lints, runs the relevant tests, backs up current file(s), atomically replaces file(s).
+
+agent.reloader sees only bot/handlers/normal_chat.py changed → soft_reload(['bot.handlers.normal_chat']) via importlib.reload.
+
+Bot sends a reply to admin: “Done — welcome message updated and live.”
+
+Large change (example): add new dependency or change main.py. Then full restart happens.
+
+Prompts & templates to embed in ai/prompts.py (copy these into prompts.py)
+
+System-level constraints for generation (must be prepended to any Gemini call):
+
+SYSTEM: You are a trusted developer assistant. You must follow these non-negotiable rules:
+- Only modify files within the project sandbox: the absolute path under PROJECT_ROOT/jarvis/.
+- NEVER write or modify files outside jarvis/.
+- Always return code that follows PEP8 and includes a top-level docstring explaining the change.
+- When asked to edit code, prefer producing a minimal patch or a full new file content. If giving a patch, use unified-diff format and include filenames.
+- Before finalizing changes, include unit tests when appropriate.
+- All files must pass static checks (ruff/black/pytest). If unable to produce tests, return a justification and a minimal smoke test.
+- Do not include secrets in code. Use environment variables only.
+- Keep external dependencies minimal. If new dependencies are required, add them to requirements.txt and flag for a full-restart.
+
+
+DevRequest generation prompt (example):
+
+USER_INSTRUCTION: {admin_text}
+PROJECT_CONTEXT: list of files and their contents (only include small files inline; for large files, include path and summary).
+GOAL: Your task is to implement this user instruction by modifying or creating files under jarvis/.
+OUTPUT_FORMAT: Provide either:
+- A unified diff between old and new file(s), OR
+- The full new contents of each changed file with exact path headers formatted as:
+--- path/to/file.py ---
+<file content here>
+If dependencies are added, include exact pip package names and version constraints to append to requirements.txt.
+Also include any new tests to add and the exact test file path.
+Explain briefly the reason for each change (2-3 lines).
+
+
+Intent classification prompt (admin_interpreter):
+
+Given the admin's message, classify whether it is:
+- NORMAL_CHAT: casual conversation / non-dev request
+- DEV_INSTRUCTION: a request to change code, add features, modify configuration, add files, or change deployment
+If DEV_INSTRUCTION, also identify suggested target files (list of existing files or new file paths) and a short 1-sentence summary of what to change.
+Output JSON: {"type": "DEV_INSTRUCTION"|"NORMAL_CHAT", "targets": [...], "summary": "..."}
+
+Validation & tests the generated project must include
+
+Unit test tests/test_basic.py that:
+
+Imports bot.handlers.normal_chat and calls a function reply_to_text("hello") or similar, asserting it returns a string.
+
+Makefile with:
+
+make install → pip install -r requirements.txt
+
+make test → runs pytest -q
+
+make lint → runs ruff/black checks
+
+requirements.txt items minimal:
+
+python-telegram-bot>=20.0
+
+requests (or gemini client)
+
+pytest
+
+black
+
+ruff
+
+watchdog (optional)
+
+Dockerfile that:
+
+Uses official Python slim image
+
+Copies project
+
+Installs requirements
+
+Exposes nothing special (bot uses outgoing connections only)
+
+CMD runs ./run.sh or python app.py
+
+Provide docker-compose.yml that maps .env and restarts on failure.
+
+Deployment examples (in deploy/jarvis.service)
+
+Provide a commented example systemd service that:
+
+Runs as a dedicated user (e.g., jarvis), with WorkingDirectory=/opt/jarvis and ExecStart=/usr/bin/python3 /opt/jarvis/app.py.
+
+Sets EnvironmentFile=/etc/jarvis/.env or uses systemd environment variables.
+
+Restarts on failure.
+
+Also include a deploy/README.md with recommended steps for Docker and systemd.
+
+UX & messages to admin (examples to include in code for bot replies)
+
+On receiving dev request:
+“I received your request and I'm preparing changes. I will validate them and let you know when complete. (This may take a few seconds.)”
+
+On success:
+“Done. Files updated and changes applied. (Soft reload / Full restart performed.)”
+
+On failure:
+“Action failed. Reverted to previous version. Error: <short error summary>. See logs jarvis/logs/self_modify.log for details.”
+
+(These messages are illustrative; include them as default phrasing and keep text editable.)
+
+Final checklist for the model when generating code
+
+Create every file listed in the folder tree, unless a few helper README placeholders are used.
+
+Add clear inline docstrings and comments explaining why each file exists.
+
+Ensure all file writes use atomic write helpers and sandbox checks.
+
+Implement the staging → lint/test → apply → reload → health check → report pipeline.
+
+Add README.md that documents env vars, run & deploy steps, and explains Reload Mode C behavior.
+
+Generate a working app.py and main.py so the project can be started with python app.py or docker-compose up.
+
+Add .env.example with TELEGRAM_TOKEN, GEMINI_API_KEY, and ADMIN_IDS placeholders.
+
+Use plain, readable code with minimal external packages.
+
+Include at least one simple unit test and a Makefile for convenience.
+
+README excerpt (first lines to include exactly)
+Jarvis — a JARVIS-style Telegram bot (Python + Gemini API)
+
+IMPORTANT: Examples in this repository are for illustration only and do not represent exhaustive security or production hardening. Before deploying to production:
+- Lock ADMIN_IDS to specific Telegram numeric IDs only.
+- Use a VM or container with restricted filesystem permissions.
+- Never expose the Gemini API key or Telegram token publicly.
+
+Example .env.example (exact content)
+# .env.example
+TELEGRAM_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+ADMIN_IDS=123456789,987654321
+ALLOWED_ROOT=./jarvis
+LOG_LEVEL=INFO
+
+Post-generation tasks (what to run after Gemini outputs files)
+
+cd jarvis
+
+make install
+
+make test
+
+python app.py (or docker-compose up --build)
+
+Output format requirement for Gemini when you run it
+
+Ask Gemini to return a zip archive listing or a single JSON object describing each file path and full file content (so it’s easy to write them to disk). Example JSON schema:
+
+{
+  "files": [
+    {"path":"README.md", "content":"..."},
+    {"path":"main.py", "content":"..."},
+    ...
+  ],
+  "notes": "Any final notes by generator"
+}
+
+
+If Gemini cannot produce a complete file for any reason, it must return a clear explanation and a minimal scaffold for that file.
+
+Final administrative note (to appear as comment in README)
+NOTE: This project enables code editing via natural-language. Only give ADMIN_IDS to trusted persons. Use backups and monitoring. Test changes in a staging environment before enabling production auto-apply.

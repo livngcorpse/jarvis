@@ -1,0 +1,18 @@
+# Example systemd service file for Jarvis Telegram bot
+# Copy this to /etc/systemd/system/jarvis.service and customize as needed
+
+[Unit]
+Description=Jarvis Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=jarvis
+WorkingDirectory=/opt/jarvis
+EnvironmentFile=/etc/jarvis/.env
+ExecStart=/usr/bin/python3 /opt/jarvis/app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
