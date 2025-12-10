@@ -8,11 +8,17 @@ from typing import Dict, Any, Optional
 import json
 import time
 import logging
+import threading
 from config import GEMINI_API_KEY
 from ai.prompts import SYSTEM_CONSTRAINTS, DEV_REQUEST_PROMPT, INTENT_CLASSIFICATION_PROMPT
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Rate limiting variables
+_rate_limit_lock = threading.Lock()
+_last_call_time = 0
+_min_call_interval = 1.0  # Minimum interval between calls in seconds
 
 # Configure the Gemini API client
 if GEMINI_API_KEY:
@@ -26,6 +32,19 @@ class GeminiClient:
         self.model = None
         if GEMINI_API_KEY:
             self.model = genai.GenerativeModel('gemini-pro')
+    
+    def _rate_limit(self):
+        """
+        Enforce rate limiting between API calls.
+        """
+        global _last_call_time
+        with _rate_limit_lock:
+            current_time = time.time()
+            time_since_last_call = current_time - _last_call_time
+            if time_since_last_call < _min_call_interval:
+                sleep_time = _min_call_interval - time_since_last_call
+                time.sleep(sleep_time)
+            _last_call_time = time.time()
     
     def _retry_with_backoff(self, func, max_retries=3, base_delay=1):
         """
@@ -70,12 +89,9 @@ class GeminiClient:
         """
         
         def _call_api():
+            self._rate_limit()  # Enforce rate limiting
             response = self.model.generate_content(prompt)
-            # Try to parse as JSON if possible
-            try:
-                return json.loads(response.text)
-            except json.JSONDecodeError:
-                return {"text": response.text}
+            return json.loads(response.text)
                 
         try:
             return self._retry_with_backoff(_call_api)

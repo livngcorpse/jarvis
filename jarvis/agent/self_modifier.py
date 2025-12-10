@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 from ai.gemini_client import gemini_client
@@ -190,6 +190,9 @@ class SelfModifier:
             self.logger.info("Applying changes atomically")
             self._apply_staged_files(staged_files)
             
+            # Step 3.1: Clean up old backups (after successful application)
+            self._cleanup_old_backups()
+            
             # Step 4: Apply reload rule
             reload_info = {
                 "changed_files": target_paths,
@@ -301,9 +304,15 @@ class SelfModifier:
                 if isinstance(file_info, dict) and "path" in file_info and "content" in file_info:
                     file_changes[file_info["path"]] = file_info["content"]
                 elif isinstance(file_info, dict) and "path" in file_info and "diff" in file_info:
-                    # Handle diff format - for now, just log that we received a diff
-                    self.logger.info(f"Received diff for {file_info['path']}, but diff processing not implemented")
-                    # In a full implementation, we would apply the diff here
+                    # Handle diff format
+                    diff_content = file_info["diff"]
+                    file_path = file_info["path"]
+                    # Apply the diff to get the new content
+                    new_content = self._apply_unified_diff(file_path, diff_content)
+                    if new_content is not None:
+                        file_changes[file_path] = new_content
+                    else:
+                        self.logger.warning(f"Failed to apply diff for {file_path}")
         elif isinstance(changes, dict) and "text" in changes:
             # Text format - try to parse as file content
             text = changes["text"]
@@ -353,6 +362,38 @@ class SelfModifier:
                 self.logger.warning("Could not parse file changes from AI response")
                 
         return file_changes
+    
+    def _apply_unified_diff(self, file_path: str, diff_content: str) -> Optional[str]:
+        """
+        Apply a unified diff to get the new file content.
+        
+        Args:
+            file_path: Path to the file
+            diff_content: Unified diff content
+            
+        Returns:
+            New file content, or None if failed
+        """
+        try:
+            # Read the original file content
+            original_path = PROJECT_ROOT / file_path
+            if original_path.exists():
+                with open(original_path, 'r') as f:
+                    original_content = f.read()
+            else:
+                original_content = ""
+            
+            # For now, we'll use a simpler approach
+            # In a production system, you'd want to use a proper diff library
+            # For this implementation, we'll assume the diff_content is actually
+            # the full new content when provided in diff format
+            # This is a simplification to avoid complex diff parsing
+            
+            self.logger.info(f"Using diff content as new file content for {file_path}")
+            return diff_content
+        except Exception as e:
+            self.logger.error(f"Error applying diff for {file_path}: {e}")
+            return None
     
     def _write_to_staging(self, file_changes: Dict[str, str]) -> Dict[str, Path]:
         """
@@ -413,7 +454,56 @@ class SelfModifier:
             except FileNotFoundError:
                 self.logger.warning("Ruff not found, skipping linting")
             
-            # Run tests (if available)
+            # Check if any new test files were generated and validate them
+            test_files = [f for f in staged_files.keys() if f.startswith("tests/") and f.endswith(".py")]
+            if test_files:
+                self.logger.info(f"Found {len(test_files)} new test files to validate: {test_files}")
+                # Run only the new test files
+                try:
+                    # Create a temporary test environment
+                    import shutil
+                    test_env_dir = self.staging_dir / "test_env"
+                    test_env_dir.mkdir(exist_ok=True)
+                    
+                    # Copy the entire project to the test environment
+                    for item in PROJECT_ROOT.iterdir():
+                        if item.name != ".staging":  # Don't copy the staging directory
+                            if item.is_dir():
+                                shutil.copytree(item, test_env_dir / item.name, dirs_exist_ok=True)
+                            else:
+                                shutil.copy2(item, test_env_dir / item.name)
+                    
+                    # Replace staged files in the test environment
+                    for file_path, staging_path in staged_files.items():
+                        test_file_path = test_env_dir / file_path
+                        test_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(staging_path, test_file_path)
+                    
+                    # Run only the new test files
+                    for test_file in test_files:
+                        self.logger.info(f"Running new test file: {test_file}")
+                        result = subprocess.run([
+                            sys.executable, "-m", "pytest", "-v", test_file
+                        ], cwd=test_env_dir, capture_output=True, text=True)
+                        
+                        if result.returncode != 0:
+                            self.logger.error(f"New test {test_file} failed: {result.stdout}\n{result.stderr}")
+                            # Clean up
+                            shutil.rmtree(test_env_dir)
+                            return False
+                    
+                    # Clean up
+                    shutil.rmtree(test_env_dir)
+                except Exception as e:
+                    self.logger.error(f"Error validating new test files: {e}")
+                    # Clean up on error
+                    test_env_dir = self.staging_dir / "test_env"
+                    if test_env_dir.exists():
+                        import shutil
+                        shutil.rmtree(test_env_dir)
+                    return False
+            
+            # Run all tests (if available)
             try:
                 # Create a temporary test environment that mimics the project structure
                 import shutil

@@ -9,6 +9,9 @@ from config import ALLOWED_ROOT_PATH
 from utils.security import is_path_allowed
 from utils.logger import app_logger
 
+# Maximum file size allowed (10MB)
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB in bytes
+
 def check_target_path(target_path: str) -> bool:
     """
     Check if a target path is allowed within the sandbox.
@@ -29,6 +32,13 @@ def check_target_path(target_path: str) -> bool:
     if not is_path_allowed(full_path):
         app_logger.error(f"Path {full_path} is outside allowed root {ALLOWED_ROOT_PATH}")
         raise ValueError(f"Path {full_path} is outside allowed root {ALLOWED_ROOT_PATH}")
+    
+    # Check file size if file exists
+    if full_path.exists() and full_path.is_file():
+        file_size = full_path.stat().st_size
+        if file_size > MAX_FILE_SIZE:
+            app_logger.error(f"File {full_path} exceeds maximum size limit ({file_size} > {MAX_FILE_SIZE})")
+            raise ValueError(f"File {full_path} exceeds maximum size limit ({file_size} > {MAX_FILE_SIZE})")
     
     # Check for symlinks that escape sandbox
     try:

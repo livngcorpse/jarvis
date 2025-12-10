@@ -85,20 +85,34 @@ def determine_reload_type(changes: Dict[str, Any]) -> str:
 
 def health_check() -> bool:
     """
-    Perform a basic health check.
+    Perform a comprehensive health check.
     
     Returns:
         True if healthy, False otherwise
     """
-    # Simple health check - verify we can import core modules
     try:
+        # Test importing core modules
         import bot.handlers.normal_chat
         import bot.dispatcher
-        # Try to call a simple function to verify functionality
+        import bot.message_router
+        import agent.self_modifier
+        
+        # Test basic functionality
         from bot.handlers.normal_chat import reply_to_text
         test_response = reply_to_text("health check")
         if not isinstance(test_response, str) or len(test_response) == 0:
             raise Exception("Health check function returned invalid response")
+        
+        # Test that core components can be instantiated
+        from ai.gemini_client import gemini_client
+        if not hasattr(gemini_client, 'model') or gemini_client.model is None:
+            raise Exception("Gemini client not properly initialized")
+            
+        # Test that the self modifier can be accessed
+        from agent.self_modifier import self_modifier
+        if not hasattr(self_modifier, 'staging_dir'):
+            raise Exception("Self modifier not properly initialized")
+        
         app_logger.info("Health check passed")
         return True
     except Exception as e:
